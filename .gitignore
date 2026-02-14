@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.DS_Store
+# Large model weight files
+cs288-sp26-a1/Part2/results/*_model.json
