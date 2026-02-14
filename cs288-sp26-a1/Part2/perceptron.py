@@ -39,6 +39,10 @@ class PerceptronModel:
 
     def __init__(self):
         self.weights: Dict[str, float] = defaultdict(float)
+        self._cached_weights: Dict[str, float] = defaultdict(float)
+        self._avg_weights: Dict[str, float] = defaultdict(float)
+        self._update_count: int = 0
+        self._use_averaged: bool = False
         self.labels: Set[str] = set()
 
     def _get_weight_key(self, feature: str, label: str) -> str:
@@ -56,9 +60,10 @@ class PerceptronModel:
             The output score.
         """
         # TODO: Implement this! Expected # of lines: <10
+        w = self._avg_weights if self._use_averaged else self.weights
         total = 0.0
         for feature, value in datapoint.features.items():
-            total += self.weights[self._get_weight_key(feature, label)] * value
+            total += w[self._get_weight_key(feature, label)] * value
         return total
 
     def predict(self, datapoint: DataPointWithFeatures) -> str:
@@ -86,8 +91,13 @@ class PerceptronModel:
         # TODO: Implement this! Expected # of lines: <10
         if prediction != datapoint.label:
             for feature, value in datapoint.features.items():
-                self.weights[self._get_weight_key(feature, datapoint.label)] += lr * value
-                self.weights[self._get_weight_key(feature, prediction)] -= lr * value
+                key_true = self._get_weight_key(feature, datapoint.label)
+                key_pred = self._get_weight_key(feature, prediction)
+                self.weights[key_true] += lr * value
+                self.weights[key_pred] -= lr * value
+                self._cached_weights[key_true] += self._update_count * lr * value
+                self._cached_weights[key_pred] -= self._update_count * lr * value
+        self._update_count += 1
 
     def train(
         self,
@@ -111,12 +121,19 @@ class PerceptronModel:
             self.labels.add(dp.label)
 
         for epoch in range(num_epochs):
+            self._use_averaged = False
             for dp in tqdm(training_data, desc=f"Epoch {epoch + 1}"):
                 prediction = self.predict(dp)
                 self.update_parameters(dp, prediction, lr)
+            # Compute averaged weights for evaluation
+            for key in self.weights:
+                self._avg_weights[key] = self.weights[key] - self._cached_weights[key] / self._update_count
+            self._use_averaged = True
             if val_data:
                 val_acc = self.evaluate(val_data)
                 print(f"Epoch {epoch + 1} | Val accuracy: {100 * val_acc:.2f}%")
+        # Keep averaged weights active for final evaluation
+        self._use_averaged = True
 
     def save_weights(self, path: str) -> None:
         with open(path, "w") as f:
@@ -162,7 +179,7 @@ if __name__ == "__main__":
         help="Feature type, e.g., bow+len",
     )
     parser.add_argument(
-        "-e", "--epochs", type=int, default=3, help="Number of epochs"
+        "-e", "--epochs", type=int, default=10, help="Number of epochs"
     )
     parser.add_argument(
         "-l", "--learning_rate", type=float, default=0.1, help="Learning rate"
