@@ -21,6 +21,7 @@ loss means a tensor of shape (). You can retrieve the loss value with loss.item(
 """
 
 import argparse
+import copy
 import os
 from collections import Counter
 from pprint import pprint
@@ -132,14 +133,23 @@ class MultilayerPerceptronModel(nn.Module):
         super().__init__()
         self.padding_index = padding_index
         # TODO: Implement this!
-        embed_dim = 128
-        hidden_dim = 64
+        embed_dim = 300
+        hidden_dim = 512
         self.embedding = nn.Embedding(
             vocab_size, embed_dim, padding_idx=padding_index
         )
-        self.fc1 = nn.Linear(embed_dim, hidden_dim)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(hidden_dim, num_classes)
+        # Input is mean_pool + max_pool concatenated = 2 * embed_dim
+        self.classifier = nn.Sequential(
+            nn.Linear(embed_dim * 2, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(hidden_dim, num_classes),
+        )
 
     def forward(
         self, input_features_b_l: torch.Tensor, input_length_b: torch.Tensor
@@ -156,14 +166,19 @@ class MultilayerPerceptronModel(nn.Module):
         # TODO: Implement this!
         # Embed tokens: (b, l) -> (b, l, embed_dim)
         embedded = self.embedding(input_features_b_l)
-        # Create mask to ignore padding: (b, l)
+        # Create mask to ignore padding: (b, l, 1)
         mask = (input_features_b_l != self.padding_index).unsqueeze(-1).float()
-        # Sum embeddings and divide by length to get average
+        # Mean pooling: sum embeddings and divide by length
         summed = (embedded * mask).sum(dim=1)
         lengths = input_length_b.clamp(min=1).unsqueeze(-1).float()
-        averaged = summed / lengths
+        mean_pooled = summed / lengths
+        # Max pooling: replace padding with -inf, then take max
+        masked_embedded = embedded + (1 - mask) * (-1e9)
+        max_pooled = masked_embedded.max(dim=1).values
+        # Concatenate mean and max pooling
+        pooled = torch.cat([mean_pooled, max_pooled], dim=1)
         # Pass through MLP
-        output_b_c = self.fc2(self.relu(self.fc1(averaged)))
+        output_b_c = self.classifier(pooled)
         return output_b_c
 
 
@@ -224,15 +239,20 @@ class Trainer:
             num_epochs: The number of training epochs.
         """
         torch.manual_seed(0)
+        best_val_acc = 0.0
+        best_state = None
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="max", factor=0.5, patience=2
+        )
         for epoch in range(num_epochs):
             self.model.train()
             total_loss = 0
-            dataloader = DataLoader(training_data, batch_size=4, shuffle=True)
+            dataloader = DataLoader(training_data, batch_size=16, shuffle=True)
             for inputs_b_l, lengths_b, labels_b in tqdm(dataloader):
                 # TODO: Implement this!
                 optimizer.zero_grad()
                 output_b_c = self.model(inputs_b_l, lengths_b)
-                loss = nn.functional.cross_entropy(output_b_c, labels_b)
+                loss = nn.functional.cross_entropy(output_b_c, labels_b, label_smoothing=0.1)
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item() * labels_b.size(0)
@@ -241,9 +261,19 @@ class Trainer:
             self.model.eval()
             val_acc = self.evaluate(val_data)
 
+            scheduler.step(val_acc)
+
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                best_state = copy.deepcopy(self.model.state_dict())
+
             print(
                 f"Epoch: {epoch + 1:<2} | Loss: {per_dp_loss:.2f} | Val accuracy: {100 * val_acc:.2f}%"
             )
+        # Restore best model
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
+            print(f"Restored best model with val accuracy: {100 * best_val_acc:.2f}%")
 
 
 if __name__ == "__main__":
@@ -256,7 +286,7 @@ if __name__ == "__main__":
         help="Data source, one of ('sst2', 'newsgroups')",
     )
     parser.add_argument(
-        "-e", "--epochs", type=int, default=3, help="Number of epochs"
+        "-e", "--epochs", type=int, default=30, help="Number of epochs"
     )
     parser.add_argument(
         "-l", "--learning_rate", type=float, default=0.001, help="Learning rate"
@@ -274,7 +304,7 @@ if __name__ == "__main__":
     print("Id to label mapping:")
     pprint(id2label)
 
-    max_length = 100
+    max_length = 500 if args.data == "newsgroups" else 100
     train_ds = BOWDataset(train_data, tokenizer, label2id, max_length)
     val_ds = BOWDataset(val_data, tokenizer, label2id, max_length)
     dev_ds = BOWDataset(dev_data, tokenizer, label2id, max_length)
@@ -289,7 +319,7 @@ if __name__ == "__main__":
     trainer = Trainer(model)
 
     print("Training the model...")
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     trainer.train(train_ds, val_ds, optimizer, num_epochs)
 
     # Evaluate on dev
