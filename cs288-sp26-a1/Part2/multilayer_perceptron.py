@@ -143,11 +143,11 @@ class MultilayerPerceptronModel(nn.Module):
             nn.Linear(embed_dim * 2, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.2),
             nn.Linear(hidden_dim, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.2),
             nn.Linear(hidden_dim, num_classes),
         )
 
@@ -247,12 +247,12 @@ class Trainer:
         for epoch in range(num_epochs):
             self.model.train()
             total_loss = 0
-            dataloader = DataLoader(training_data, batch_size=16, shuffle=True)
+            dataloader = DataLoader(training_data, batch_size=4, shuffle=True)
             for inputs_b_l, lengths_b, labels_b in tqdm(dataloader):
                 # TODO: Implement this!
                 optimizer.zero_grad()
                 output_b_c = self.model(inputs_b_l, lengths_b)
-                loss = nn.functional.cross_entropy(output_b_c, labels_b, label_smoothing=0.1)
+                loss = nn.functional.cross_entropy(output_b_c, labels_b, label_smoothing=0.05)
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item() * labels_b.size(0)
